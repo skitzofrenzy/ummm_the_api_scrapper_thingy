@@ -20,12 +20,14 @@ load_dotenv()
 PORT = int(os.getenv("PORT", 5000))
 DEBUG = os.getenv("DEBUG", "True").lower() in ("true", "1", "t")
 
-TARGET_URL = os.getenv(
-    "TARGET_URL",
-    "TARGET_URL_PLACEHOLDER"
-)
+TARGET_URL = os.getenv("TARGET_URL")
+BASE_URL = os.getenv("BASE_URL")
 
-BASE_URL = "BASE_URL_PLACEHOLDER"
+if not TARGET_URL or not BASE_URL:
+    raise RuntimeError(
+        "TARGET_URL and BASE_URL must be set in environment variables "
+        "or a local .env file. Do not commit .env to the repository."
+    )
 
 DEFAULT_DELAY = int(os.getenv("REQUEST_DELAY", 3))
 
