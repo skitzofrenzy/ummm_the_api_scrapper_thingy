@@ -5,6 +5,8 @@ import time
 import threading
 import requests
 import urllib3
+import re
+from urllib.parse import urlparse
 
 from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
@@ -21,11 +23,13 @@ PORT = int(os.getenv("PORT", 5000))
 DEBUG = os.getenv("DEBUG", "True").lower() in ("true", "1", "t")
 
 TARGET_URL = os.getenv("TARGET_URL")
+VALIDATE_URL = os.getenv("VALIDATE_URL")
+SESSION_URL = os.getenv("SESSION_URL")
 BASE_URL = os.getenv("BASE_URL")
 
-if not TARGET_URL or not BASE_URL:
+if not TARGET_URL or not VALIDATE_URL or not SESSION_URL:
     raise RuntimeError(
-        "TARGET_URL and BASE_URL must be set in environment variables "
+        "TARGET_URL, VALIDATE_URL and SESSION_URL must be set in environment variables "
         "or a local .env file. Do not commit .env to the repository."
     )
 
@@ -84,6 +88,8 @@ scrape_state = {
     "current_letter": None,
     "completed_letters": [],
     "total_records": 0,
+    "records_added_last_request": 0,
+    "records_received_last_request": 0,
     "consecutive_errors": 0,
     "total_errors": 0,
     "filename": None,
@@ -107,13 +113,17 @@ def clean_text(raw_text):
 
 
 def save_records(file_path, records):
-    with open(file_path, "w", encoding="utf-8") as f:
+    temporary_path = file_path + ".tmp"
+
+    with open(temporary_path, "w", encoding="utf-8") as f:
         json.dump(
             list(records.values()),
             f,
             indent=2,
             ensure_ascii=False
         )
+
+    os.replace(temporary_path, file_path)
 
 
 def update_state(**kwargs):
@@ -134,6 +144,8 @@ def reset_state():
             "current_letter": None,
             "completed_letters": [],
             "total_records": 0,
+            "records_added_last_request": 0,
+            "records_received_last_request": 0,
             "consecutive_errors": 0,
             "total_errors": 0,
             "filename": None,
@@ -165,40 +177,178 @@ def initialize_session(session):
     print("Initializing RGD session")
     print("=" * 60)
 
-    try:
-        response = session.get(
-            BASE_URL,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept": (
-                    "text/html,application/xhtml+xml,"
-                    "application/xml;q=0.9,image/avif,"
-                    "image/webp,*/*;q=0.8"
-                ),
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            verify=VERIFY_SSL,
-            timeout=25,
-        )
+    session_url = SESSION_URL
 
-        print(
-            f"RGD initial request: "
-            f"{response.status_code} {response.reason}"
-        )
+    # First, load the frontend page to establish any base cookies.
+    if BASE_URL:
+        frontend_url = f"{BASE_URL}/ttNameSearch/"
+        try:
+            resp_front = session.get(
+                frontend_url,
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": (
+                        "text/html,application/xhtml+xml,"
+                        "application/xml;q=0.9,image/avif,"
+                        "image/webp,*/*;q=0.8"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                verify=VERIFY_SSL,
+                timeout=25,
+            )
 
-        print(
-            f"Received {len(response.cookies)} cookie(s)"
-        )
+            print(f"RGD frontend request: {resp_front.status_code} {resp_front.reason}")
 
-        print(
-            f"Session contains {len(session.cookies)} cookie(s)"
-        )
+        except requests.RequestException as e:
+            print(f"RGD frontend request failed: {e}")
 
-        return response
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
-    except requests.RequestException as e:
-        print(f"RGD session initialization failed: {e}")
-        return None
+    if BASE_URL:
+        headers["Referer"] = f"{BASE_URL}/ttNameSearch/"
+
+    # Try GET the session endpoint, with a POST fallback, and a couple retries.
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            response = session.get(
+                session_url,
+                headers=headers,
+                verify=VERIFY_SSL,
+                timeout=25,
+            )
+
+            print(f"RGD session request: {response.status_code} {response.reason}")
+
+            # Show Set-Cookie header if present (shortened)
+            sc = response.headers.get("Set-Cookie")
+            if sc:
+                print(f"Set-Cookie header: {sc[:200]}")
+
+            print(f"Received cookies: {len(response.cookies)}")
+            print(f"Session cookies: {len(session.cookies)}")
+
+            for cookie in session.cookies:
+                print(f"  {cookie.name}={cookie.value[:20]}...")
+
+            # Try to obtain jwt from response.cookies, session.cookies or Set-Cookie header
+            jwt_value = None
+            jwt_value = response.cookies.get("jwt") or session.cookies.get("jwt")
+
+            if not jwt_value:
+                sc_hdr = response.headers.get("Set-Cookie", "") or ""
+                m = re.search(r"\bjwt=([^;\s]+)", sc_hdr)
+                if m:
+                    jwt_value = m.group(1)
+
+                    # set cookie into the session cookiejar with a domain/path so it will be sent
+                    host = urlparse(session_url).hostname
+                    try:
+                        if host:
+                            session.cookies.set("jwt", jwt_value, domain=host, path="/namesearch-server")
+                        else:
+                            session.cookies.set("jwt", jwt_value)
+
+                        print("Parsed and injected jwt into session.cookies (masked).")
+                    except Exception as e:
+                        print(f"Failed injecting jwt into session cookies: {e}")
+
+            if session.cookies.get("jwt"):
+                print("JWT cookie successfully obtained.")
+                return True
+
+            # If no jwt, try POST once per attempt (some servers expect POST)
+            try:
+                post_resp = session.post(
+                    session_url,
+                    headers=headers,
+                    json={},
+                    verify=VERIFY_SSL,
+                    timeout=25,
+                )
+
+                print(f"RGD session POST: {post_resp.status_code} {post_resp.reason}")
+
+                sc = post_resp.headers.get("Set-Cookie")
+                if sc:
+                    print(f"Set-Cookie header (POST): {sc[:200]}")
+
+                for cookie in session.cookies:
+                    print(f"  {cookie.name}={cookie.value[:20]}...")
+
+                # Check post response for jwt in cookies or headers
+                jwt_value = post_resp.cookies.get("jwt") or session.cookies.get("jwt")
+                if not jwt_value:
+                    sc_post = post_resp.headers.get("Set-Cookie", "") or ""
+                    m2 = re.search(r"\bjwt=([^;\s]+)", sc_post)
+                    if m2:
+                        jwt_value = m2.group(1)
+                        host = urlparse(session_url).hostname
+                        try:
+                            if host:
+                                session.cookies.set("jwt", jwt_value, domain=host, path="/namesearch-server")
+                            else:
+                                session.cookies.set("jwt", jwt_value)
+                            print("Parsed and injected jwt into session.cookies from POST (masked).")
+                        except Exception as e:
+                            print(f"Failed injecting jwt from POST: {e}")
+
+                if session.cookies.get("jwt"):
+                    print("JWT cookie successfully obtained (POST).")
+                    return True
+
+            except requests.RequestException:
+                pass
+
+        except requests.RequestException as e:
+            print(f"RGD session initialization failed (attempt {attempt+1}): {e}")
+
+        # small backoff before retrying
+        time.sleep(1)
+
+    print("WARNING: JWT cookie was not received after retries.")
+    return False
+
+
+def validate_name(session, name, headers):
+    payload = {
+        "rvr-input-lang": "en",
+        "CompanyName": name,
+        "id": "NSPPublicSearch"
+    }
+
+    response = session.post(
+        VALIDATE_URL,
+        json=payload,
+        headers=headers,
+        verify=VERIFY_SSL,
+        timeout=25
+    )
+
+    return response
+
+
+def search_name_reservation(session, name, headers):
+    payload = {
+        "rvr-input-lang": "en",
+        "ProposedName": name,
+        "searchName": "ns-name-reservation"
+    }
+
+    response = session.post(
+        TARGET_URL,
+        json=payload,
+        headers=headers,
+        verify=VERIFY_SSL,
+        timeout=25
+    )
+
+    return response
 
 
 # ============================================================
@@ -229,16 +379,26 @@ def scrape_worker(delay):
 
     session = create_session()
 
-    initialize_session(session)
+    if not initialize_session(session):
+        update_state(
+            running=False,
+            status="error",
+            message="Failed to initialize session (no JWT)."
+        )
+
+        print("Failed to initialize session; aborting scrape.")
+        return
 
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Content-Type": "application/json",
-        "Origin": BASE_URL,
-        "Referer": BASE_URL + "/",
     }
+
+    if BASE_URL:
+        headers["Origin"] = BASE_URL
+        headers["Referer"] = f"{BASE_URL}/ttNameSearch/"
 
     consecutive_errors = 0
     total_errors = 0
@@ -280,184 +440,226 @@ def scrape_worker(delay):
             message=f"Scraping letter {char}..."
         )
 
-        print(
-            f"[{char}] Requesting registry data..."
-        )
 
-        payload = {
-            "rvr-input-lang": "en",
-            "CompanyName": char,
-            "searchName": "ns-public-search"
-        }
+        print(f"[{char}] Requesting registry data...")
+
+        # ====================================================
+        # STEP 1 - Validate
+        # ====================================================
+
+        try:
+            print(f"[{char}] Validation request...")
+
+            validation_response = validate_name(session, char, headers)
+
+            print(f"[{char}] Validation HTTP {validation_response.status_code}")
+
+            if validation_response.status_code != 200:
+                consecutive_errors += 1
+                total_errors += 1
+
+                print(f"[{char}] Validation failed: {validation_response.text[:1000]}")
+
+                update_state(
+                    consecutive_errors=consecutive_errors,
+                    total_errors=total_errors,
+                    status="error",
+                    message=(
+                        f"Validation failed for {char}: HTTP {validation_response.status_code}"
+                    )
+                )
+
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    break
+
+                # brief interruptible delay before retrying
+                for _ in range(delay * 10):
+                    if get_state()["stop_requested"]:
+                        break
+                    time.sleep(0.1)
+
+                continue
+
+        except requests.RequestException as e:
+            consecutive_errors += 1
+            total_errors += 1
+
+            print(f"[{char}] Validation request error:")
+            print(e)
+
+            update_state(
+                consecutive_errors=consecutive_errors,
+                total_errors=total_errors,
+                status="error",
+                message=(
+                    f"Validation request failed for {char}: {e}"
+                )
+            )
+
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                break
+
+            for _ in range(delay * 10):
+                if get_state()["stop_requested"]:
+                    break
+                time.sleep(0.1)
+
+            continue
+
+        # ====================================================
+        # STEP 2 - Name reservation search
+        # ====================================================
 
         try:
 
-            response = session.post(
-                TARGET_URL,
-                json=payload,
-                headers=headers,
-                verify=VERIFY_SSL,
-                timeout=25,
-            )
+            print(f"[{char}] Requesting name reservation data...")
 
-            print(
-                f"[{char}] HTTP {response.status_code}"
-            )
+            response = search_name_reservation(session, char, headers)
 
-            # =================================================
-            # SUCCESS
-            # =================================================
+            print(f"[{char}] Search HTTP {response.status_code}")
 
-            if response.status_code == 200:
+            # ------------------------------------------------
+            # Handle 401 by refreshing JWT and retrying once
+            # ------------------------------------------------
+            if response.status_code == 401:
+                print(f"[{char}] Received 401 — refreshing session and retrying")
 
-                consecutive_errors = 0
+                refreshed = initialize_session(session)
 
-                update_state(
-                    consecutive_errors=0,
-                    total_errors=total_errors
-                )
-
-                try:
-                    data = response.json()
-
-                except ValueError:
-
-                    total_errors += 1
+                if refreshed:
+                    response = search_name_reservation(session, char, headers)
+                    print(f"[{char}] Retry HTTP {response.status_code}")
+                else:
                     consecutive_errors += 1
-
-                    print(
-                        f"[{char}] Invalid JSON response."
-                    )
-
+                    total_errors += 1
                     update_state(
                         consecutive_errors=consecutive_errors,
-                        total_errors=total_errors
+                        total_errors=total_errors,
+                        total_records=len(records),
+                        status="error",
+                        message=(
+                            f"Failed to refresh session after 401 on {char}."
+                        )
                     )
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                        print(
-                            "Maximum consecutive errors reached."
-                        )
+                        break
 
-                        update_state(
-                            running=False,
-                            current_letter=None,
-                            status="error",
-                            message=(
-                                f"Stopped after "
-                                f"{MAX_CONSECUTIVE_ERRORS} "
-                                f"consecutive errors."
-                            ),
-                            total_records=len(records)
-                        )
-
-                        save_records(file_path, records)
-                        return
+                    for _ in range(delay * 10):
+                        if get_state()["stop_requested"]:
+                            break
+                        time.sleep(0.1)
 
                     continue
 
-                results = data.get(
-                    "resultset",
-                    []
-                )
+            # ------------------------------------------------
+            # SUCCESS
+            # ------------------------------------------------
 
-                print(
-                    f"[{char}] Received "
-                    f"{len(results)} result(s)"
-                )
+            if response.status_code == 200:
+
+                # A successful request resets the consecutive error counter.
+                consecutive_errors = 0
+
+                try:
+                    data = response.json()
+                except ValueError:
+                    consecutive_errors += 1
+                    total_errors += 1
+
+                    print(f"[{char}] Invalid JSON response.")
+
+                    update_state(
+                        consecutive_errors=consecutive_errors,
+                        total_errors=total_errors,
+                        status="error",
+                        message=(
+                            f"Invalid JSON response for {char}."
+                        )
+                    )
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        break
+
+                    for _ in range(delay * 10):
+                        if get_state()["stop_requested"]:
+                            break
+                        time.sleep(0.1)
+
+                    continue
+
+                results = data.get("resultset", [])
+
+                if not isinstance(results, list):
+                    results = []
+
+                print(f"[{char}] API returned {len(results)} result(s)")
+
+                added = 0
+                duplicates = 0
+                missing_keys = 0
 
                 for item in results:
 
-                    fields = item.get(
-                        "fields",
-                        {}
-                    )
+                    if not isinstance(item, dict):
+                        continue
 
-                    record_id = (
-                        fields.get("CompanyNumber")
-                        or fields.get("irn")
-                        or item.get("key")
-                    )
+                    record_id = item.get("key")
 
                     if not record_id:
+                        missing_keys += 1
                         continue
 
                     if record_id in records:
+                        duplicates += 1
                         continue
 
-                    records[record_id] = {
-                        "company_number": fields.get(
-                            "CompanyNumber"
-                        ),
+                    # Preserve the original API item
+                    records[record_id] = item
+                    added += 1
 
-                        "company_name": clean_text(
-                            fields.get("CompanyName")
-                        ),
+                # SAVE IMMEDIATELY AFTER THIS SEARCH
+                save_records(file_path, records)
 
-                        "record_type": fields.get(
-                            "RecordType"
-                        ),
+                print(f"[{char}] New records: {added}")
+                print(f"[{char}] Duplicates: {duplicates}")
 
-                        "record_status": fields.get(
-                            "RecordStatus"
-                        ),
+                if missing_keys:
+                    print(f"[{char}] Results without key: {missing_keys}")
 
-                        "registration_date": fields.get(
-                            "RegistrationDate"
-                        ),
-
-                        "address": clean_text(
-                            fields.get(
-                                "CurrentStreetAddress"
-                            )
-                        ),
-
-                        "state_area": clean_text(
-                            fields.get(
-                                "CurrentState"
-                            )
-                        ),
-
-                        "irn": fields.get("irn")
-                    }
-
-                save_records(
-                    file_path,
-                    records
-                )
-
-                print(
-                    f"[{char}] Total unique records: "
-                    f"{len(records)}"
-                )
+                print(f"[{char}] Total unique records: {len(records)}")
 
                 update_state(
                     total_records=len(records),
-                    completed_letters=[
-                        *get_state()["completed_letters"],
-                        char
-                    ],
+                    records_added_last_request=added,
+                    records_received_last_request=len(results),
                     consecutive_errors=0,
-                    total_errors=total_errors
+                    total_errors=total_errors,
+                    status="scraping",
+                    message=(
+                        f"{char}: received {len(results)} results, added {added} new records, ignored {duplicates} duplicates."
+                    )
                 )
 
-            # =================================================
+                # Add this letter to completed letters.
+                current_completed = get_state()["completed_letters"]
+
+                if char not in current_completed:
+                    current_completed = [*current_completed, char]
+
+                update_state(completed_letters=current_completed)
+
+            # ------------------------------------------------
             # ERROR
-            # =================================================
+            # ------------------------------------------------
 
             else:
 
                 consecutive_errors += 1
                 total_errors += 1
 
-                print(
-                    f"[{char}] ERROR "
-                    f"{response.status_code}"
-                )
-
-                print(
-                    response.text[:1000]
-                )
+                print(f"[{char}] ERROR {response.status_code}")
+                print(response.text[:2000])
 
                 update_state(
                     consecutive_errors=consecutive_errors,
@@ -465,57 +667,19 @@ def scrape_worker(delay):
                     total_records=len(records),
                     status="error",
                     message=(
-                        f"HTTP {response.status_code} "
-                        f"on letter {char}. "
-                        f"Consecutive errors: "
-                        f"{consecutive_errors}/"
-                        f"{MAX_CONSECUTIVE_ERRORS}"
+                        f"HTTP {response.status_code} on {char}. Consecutive errors: {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}"
                     )
                 )
 
-                # ------------------------------------------------
-                # Stop after 3 consecutive errors
-                # ------------------------------------------------
-
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-
-                    print("")
-                    print("=" * 60)
-                    print(
-                        f"Stopping after "
-                        f"{MAX_CONSECUTIVE_ERRORS} "
-                        f"consecutive errors."
-                    )
-                    print("=" * 60)
-
-                    save_records(
-                        file_path,
-                        records
-                    )
-
-                    update_state(
-                        running=False,
-                        current_letter=None,
-                        status="error",
-                        message=(
-                            f"Scrape stopped after "
-                            f"{MAX_CONSECUTIVE_ERRORS} "
-                            f"consecutive errors."
-                        ),
-                        total_records=len(records)
-                    )
-
-                    return
+                    break
 
         except requests.RequestException as e:
 
             consecutive_errors += 1
             total_errors += 1
 
-            print(
-                f"[{char}] Request error:"
-            )
-
+            print(f"[{char}] Request error:")
             print(e)
 
             update_state(
@@ -524,34 +688,22 @@ def scrape_worker(delay):
                 total_records=len(records),
                 status="error",
                 message=(
-                    f"Request error on {char}. "
-                    f"Consecutive errors: "
-                    f"{consecutive_errors}/"
-                    f"{MAX_CONSECUTIVE_ERRORS}"
+                    f"Request error on {char}. Consecutive errors: {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}"
                 )
             )
 
             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
 
-                print(
-                    f"Stopping after "
-                    f"{MAX_CONSECUTIVE_ERRORS} "
-                    f"consecutive errors."
-                )
+                print(f"Stopping after {MAX_CONSECUTIVE_ERRORS} consecutive errors.")
 
-                save_records(
-                    file_path,
-                    records
-                )
+                save_records(file_path, records)
 
                 update_state(
                     running=False,
                     current_letter=None,
                     status="error",
                     message=(
-                        f"Scrape stopped after "
-                        f"{MAX_CONSECUTIVE_ERRORS} "
-                        f"consecutive errors."
+                        f"Scrape stopped after {MAX_CONSECUTIVE_ERRORS} consecutive errors."
                     ),
                     total_records=len(records)
                 )
@@ -563,38 +715,32 @@ def scrape_worker(delay):
             consecutive_errors += 1
             total_errors += 1
 
-            print(
-                f"[{char}] Unexpected error:"
-            )
-
+            print(f"[{char}] Unexpected error:")
             print(e)
 
             update_state(
                 consecutive_errors=consecutive_errors,
                 total_errors=total_errors,
-                total_records=len(records)
+                total_records=len(records),
             )
 
             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
 
-                save_records(
-                    file_path,
-                    records
-                )
+                save_records(file_path, records)
 
                 update_state(
                     running=False,
                     current_letter=None,
                     status="error",
                     message=(
-                        f"Scrape stopped after "
-                        f"{MAX_CONSECUTIVE_ERRORS} "
-                        f"consecutive errors."
+                        f"Scrape stopped after {MAX_CONSECUTIVE_ERRORS} consecutive errors."
                     ),
                     total_records=len(records)
                 )
 
                 return
+
+        
 
         # ----------------------------------------------------
         # Delay
@@ -773,7 +919,8 @@ def start_scrape():
     thread.start()
 
     return jsonify({
-        "status": "started"
+        "status": "started",
+        "delay": delay
     })
 
 
