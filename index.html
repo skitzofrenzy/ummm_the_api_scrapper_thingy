@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Registry Automation Dashboard</title>
+
+    <link
+        rel="stylesheet"
+        href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"
+    >
+
+    <style>
+        body {
+            font-family: -apple-system, sans-serif;
+            margin: 2rem;
+            background: #f4f6f8;
+            color: #333;
+        }
+
+        .card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            margin-bottom: 1.5rem;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: #0066cc;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        button.danger {
+            background: #dc3545;
+        }
+
+        select {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+
+        #statusText {
+            font-weight: 500;
+        }
+
+        #progressText {
+            margin-top: 10px;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="card">
+
+        <h2>Scraper & File Manager</h2>
+
+        <div class="controls">
+
+            <button
+                id="startBtn"
+                onclick="triggerScrape()"
+            >
+                Start New A-Z Scrape
+            </button>
+
+            <button
+                id="stopBtn"
+                class="danger"
+                onclick="stopScrape()"
+                disabled
+            >
+                Stop Scrape
+            </button>
+
+            <span id="statusText"></span>
+
+        </div>
+
+        <div id="progressText"></div>
+
+        <hr
+            style="
+                margin: 1.5rem 0;
+                border: none;
+                border-top: 1px solid #eee;
+            "
+        >
+
+        <div class="controls">
+
+            <label for="fileSelect">
+                Select Date File:
+            </label>
+
+            <select id="fileSelect"></select>
+
+            <button onclick="loadSelectedFile()">
+                Load File
+            </button>
+
+            <button
+                class="danger"
+                onclick="deleteSelectedFile()"
+            >
+                Delete File
+            </button>
+
+        </div>
+
+    </div>
+
+
+    <div class="card">
+
+        <table
+            id="dataTable"
+            class="display"
+            style="width:100%"
+        >
+
+            <thead>
+
+                <tr>
+                    <th>IRN</th>
+                    <th>Company Name</th>
+                    <th>Status</th>
+                    <th>Registration Date</th>
+                </tr>
+
+            </thead>
+
+            <tbody></tbody>
+
+        </table>
+
+    </div>
+
+
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+
+
+    <script>
+
+        let dataTable = $('#dataTable').DataTable();
+
+        let statusTimer = null;
+
+
+        // ====================================================
+        // File list
+        // ====================================================
+
+        async function refreshFileList() {
+
+            const res = await fetch('/api/files');
+
+            const files = await res.json();
+
+            const select =
+                document.getElementById('fileSelect');
+
+            select.innerHTML = '';
+
+            if (files.length === 0) {
+
+                select.innerHTML =
+                    '<option value="">No saved searches found</option>';
+
+                return;
+            }
+
+            files.forEach(file => {
+
+                const opt =
+                    document.createElement('option');
+
+                opt.value = file;
+                opt.textContent = file;
+
+                select.appendChild(opt);
+
+            });
+        }
+
+
+        // ====================================================
+        // Load file
+        // ====================================================
+
+        async function loadSelectedFile() {
+
+            const filename =
+                document.getElementById('fileSelect').value;
+
+            if (!filename) {
+                return;
+            }
+
+            const res =
+                await fetch(`/api/files/${filename}`);
+
+            const data =
+                await res.json();
+
+            dataTable.clear();
+
+            data.forEach(row => {
+
+                dataTable.row.add([
+                    row.irn || '',
+                    row.company_name || '',
+                    row.record_status || '',
+                    row.registration_date || ''
+                ]);
+
+            });
+
+            dataTable.draw();
+        }
+
+
+        // ====================================================
+        // Delete file
+        // ====================================================
+
+        async function deleteSelectedFile() {
+
+            const filename =
+                document.getElementById('fileSelect').value;
+
+            if (
+                !filename ||
+                !confirm(`Delete ${filename}?`)
+            ) {
+                return;
+            }
+
+            await fetch(
+                `/api/files/${filename}`,
+                {
+                    method: 'DELETE'
+                }
+            );
+
+            dataTable.clear().draw();
+
+            await refreshFileList();
+        }
+
+
+        // ====================================================
+        // Start scrape
+        // ====================================================
+
+        async function triggerScrape() {
+
+            const startBtn =
+                document.getElementById('startBtn');
+
+            const stopBtn =
+                document.getElementById('stopBtn');
+
+            const status =
+                document.getElementById('statusText');
+
+            const progress =
+                document.getElementById('progressText');
+
+
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+
+            status.textContent =
+                'Starting scrape...';
+
+            progress.textContent = '';
+
+
+            try {
+
+                const res = await fetch(
+                    '/api/scrape',
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type':
+                                'application/json'
+                        },
+
+                        body: JSON.stringify({
+                            delay: 10
+                        })
+                    }
+                );
+
+                const result =
+                    await res.json();
+
+                if (!res.ok) {
+
+                    status.textContent =
+                        result.error ||
+                        'Could not start scrape.';
+
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+
+                    return;
+                }
+
+                status.textContent =
+                    'Scrape running...';
+
+                startStatusPolling();
+
+            } catch (err) {
+
+                console.error(err);
+
+                status.textContent =
+                    'Failed to start scrape.';
+
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+            }
+        }
+
+
+        // ====================================================
+        // Stop scrape
+        // ====================================================
+
+        async function stopScrape() {
+
+            const stopBtn =
+                document.getElementById('stopBtn');
+
+            const status =
+                document.getElementById('statusText');
+
+            stopBtn.disabled = true;
+
+            status.textContent =
+                'Stopping scrape...';
+
+
+            try {
+
+                await fetch(
+                    '/api/scrape/stop',
+                    {
+                        method: 'POST'
+                    }
+                );
+
+            } catch (err) {
+
+                console.error(err);
+
+                status.textContent =
+                    'Failed to stop scrape.';
+            }
+        }
+
+
+        // ====================================================
+        // Status polling
+        // ====================================================
+
+        function startStatusPolling() {
+
+            if (statusTimer) {
+                clearInterval(statusTimer);
+            }
+
+            statusTimer = setInterval(
+                checkScrapeStatus,
+                1000
+            );
+
+            checkScrapeStatus();
+        }
+
+
+        async function checkScrapeStatus() {
+
+            try {
+
+                const res =
+                    await fetch(
+                        '/api/scrape/status'
+                    );
+
+                const state =
+                    await res.json();
+
+
+                const startBtn =
+                    document.getElementById('startBtn');
+
+                const stopBtn =
+                    document.getElementById('stopBtn');
+
+                const status =
+                    document.getElementById('statusText');
+
+                const progress =
+                    document.getElementById('progressText');
+
+
+                // ------------------------------------------------
+                // Running
+                // ------------------------------------------------
+
+                if (state.running) {
+
+                    startBtn.disabled = true;
+
+                    stopBtn.disabled = false;
+
+                    status.textContent =
+                        state.message ||
+                        'Scraping...';
+
+                    progress.textContent =
+                        `Current letter: ${
+                            state.current_letter || '-'
+                        } | Records: ${
+                            state.total_records
+                        } | Consecutive errors: ${
+                            state.consecutive_errors
+                        }/3`;
+
+                    return;
+                }
+
+
+                // ------------------------------------------------
+                // Finished
+                // ------------------------------------------------
+
+                clearInterval(statusTimer);
+
+                statusTimer = null;
+
+                startBtn.disabled = false;
+
+                stopBtn.disabled = true;
+
+
+                if (state.status === 'complete') {
+
+                    status.textContent =
+                        `Done! Saved to ${
+                            state.filename
+                        } (${
+                            state.total_records
+                        } records).`;
+
+                } else if (state.status === 'stopped') {
+
+                    status.textContent =
+                        `Scrape stopped. ${
+                            state.total_records
+                        } records saved.`;
+
+                } else if (state.status === 'error') {
+
+                    status.textContent =
+                        `Scrape stopped: ${
+                            state.message
+                        }`;
+
+                } else {
+
+                    status.textContent =
+                        state.message ||
+                        'Scrape finished.';
+                }
+
+
+                progress.textContent =
+                    `Completed letters: ${
+                        state.completed_letters.join(', ') ||
+                        'None'
+                    } | Total errors: ${
+                        state.total_errors
+                    }`;
+
+
+                await refreshFileList();
+
+
+                if (state.filename) {
+
+                    document.getElementById(
+                        'fileSelect'
+                    ).value = state.filename;
+
+                    await loadSelectedFile();
+                }
+
+
+            } catch (err) {
+
+                console.error(
+                    'Status polling failed:',
+                    err
+                );
+
+            }
+        }
+
+
+        // ====================================================
+        // Initial load
+        // ====================================================
+
+        refreshFileList();
+
+    </script>
+
+</body>
+</html>
