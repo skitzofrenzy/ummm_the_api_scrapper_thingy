@@ -4,154 +4,96 @@
     <meta charset="UTF-8">
     <title>Registry Automation Dashboard</title>
 
-    <link
-        rel="stylesheet"
-        href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"
-    >
+    <!-- Tailwind (play CDN) and DaisyUI (compiled) for a modern UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui/dist/full.css" rel="stylesheet">
+
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 
     <style>
-        body {
-            font-family: -apple-system, sans-serif;
-            margin: 2rem;
-            background: #f4f6f8;
-            color: #333;
-        }
-
-        .card {
-            background: white;
-            padding: 1.5rem;
-            border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-            margin-bottom: 1.5rem;
-        }
-
-        .controls {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-
-        button {
-            background: #0066cc;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-
-        button:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-
-        button.danger {
-            background: #dc3545;
-        }
-
-        select {
-            padding: 8px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-        }
-
-        #statusText {
-            font-weight: 500;
-        }
-
-        #progressText {
-            margin-top: 10px;
-            color: #666;
-        }
+        body { background: #f8fafc; }
+        /* Minimal table tweaks to better match Tailwind spacing */
+        table.dataTable tbody tr td { vertical-align: middle; }
     </style>
 </head>
 
 <body>
 
-    <div class="card">
+    <div class="container mx-auto p-6">
 
-        <h2>Scraper & File Manager</h2>
+        <div class="card card-compact bg-base-100 shadow-md p-6 mb-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-2xl font-semibold">Scraper & File Manager</h2>
+                    <p id="progressText" class="text-sm text-muted"></p>
+                </div>
 
-        <div class="controls">
+                <div class="flex gap-3 items-center">
+                    <button id="startBtn" class="btn btn-primary" onclick="triggerScrape()">Start New A-Z Scrape</button>
+                    <button id="stopBtn" class="btn btn-error" onclick="stopScrape()" disabled>Stop Scrape</button>
+                </div>
+            </div>
 
-            <button
-                id="startBtn"
-                onclick="triggerScrape()"
-            >
-                Start New A-Z Scrape
-            </button>
+                <div class="mt-4 flex flex-wrap gap-3 items-center">
+                <div class="flex items-center gap-2">
+                    <label for="fileSelect" class="text-sm">Select Date File:</label>
+                    <select id="fileSelect" class="select select-bordered"></select>
+                </div>
 
-            <button
-                id="stopBtn"
-                class="danger"
-                onclick="stopScrape()"
-                disabled
-            >
-                Stop Scrape
-            </button>
+                <button id="loadBtn" class="btn btn-success" onclick="loadSelectedFile()">Load File</button>
+                <button class="btn btn-outline btn-error" onclick="deleteSelectedFile()">Delete File</button>
 
-            <span id="statusText"></span>
-
+                <div id="statusText" class="ml-auto text-sm font-medium"></div>
+            </div>
         </div>
 
-        <div id="progressText"></div>
 
-        <hr
-            style="
-                margin: 1.5rem 0;
-                border: none;
-                border-top: 1px solid #eee;
-            "
-        >
-
-        <div class="controls">
-
-            <label for="fileSelect">
-                Select Date File:
-            </label>
-
-            <select id="fileSelect"></select>
-
-            <button onclick="loadSelectedFile()">
-                Load File
-            </button>
-
-            <button
-                class="danger"
-                onclick="deleteSelectedFile()"
-            >
-                Delete File
-            </button>
-
+        <div id="noDataPlaceholder" class="card bg-base-100 shadow p-6 text-center text-sm text-muted">
+            No data loaded. Select a saved file and click "Load File" to display results.
         </div>
 
-    </div>
+        <div id="tableSkeleton" class="card bg-base-100 shadow p-4 hidden">
+            <div class="space-y-3">
+                <div class="h-4 bg-base-200 rounded w-1/3 mx-auto animate-pulse"></div>
+                <div class="space-y-2">
+                    <div class="h-4 bg-base-200 rounded w-full animate-pulse"></div>
+                    <div class="h-4 bg-base-200 rounded w-5/6 animate-pulse"></div>
+                    <div class="h-4 bg-base-200 rounded w-4/6 animate-pulse"></div>
+                </div>
+            </div>
+        </div>
 
+        <div id="tableWrapper" class="card bg-base-100 shadow p-4 hidden">
 
-    <div class="card">
+            <div class="mb-3 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <span class="text-sm">Type legend:</span>
+                    <div class="badge">PC</div>
+                    <div class="badge">NPO</div>
+                    <div class="badge">IB</div>
+                    <div class="badge">P/FB</div>
+                    <div class="badge">TOC</div>
+                    <div class="badge badge-outline">Other</div>
+                </div>
+                <div class="text-sm text-muted">Records: <span id="totalRecords">0</span></div>
+            </div>
 
-        <table
-            id="dataTable"
-            class="display"
-            style="width:100%"
-        >
+            <div class="overflow-x-auto">
+                <table id="dataTable" class="table table-zebra w-full">
+                    <thead>
+                        <tr>
+                            <th>Company Name</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Registration Date</th>
+                            <th>Address</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
 
-            <thead>
-
-                <tr>
-                        <th>Company Name</th>
-                        <th>Status</th>
-                        <th>Registration Date</th>
-                        <th>Address</th>
-                    </tr>
-
-            </thead>
-
-            <tbody></tbody>
-
-        </table>
-
+        </div>
     </div>
 
 
@@ -162,9 +104,20 @@
 
     <script>
 
-        let dataTable = $('#dataTable').DataTable();
+        let dataTable = null;
+        let currentLoadedFileName = null;
 
         let statusTimer = null;
+
+        function escapeHtml(unsafe) {
+            if (unsafe === null || unsafe === undefined) return '';
+            return String(unsafe)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
 
 
         // ====================================================
@@ -210,57 +163,107 @@
 
         async function loadSelectedFile() {
 
-            const filename =
-                document.getElementById('fileSelect').value;
+            const filename = document.getElementById('fileSelect').value;
 
-            if (!filename) {
-                return;
+            if (!filename) return;
+
+            const tableWrapper = document.getElementById('tableWrapper');
+            const skeleton = document.getElementById('tableSkeleton');
+            const noData = document.getElementById('noDataPlaceholder');
+            const loadBtn = document.getElementById('loadBtn');
+
+            // show skeleton while loading
+            noData.classList.add('hidden');
+            tableWrapper.classList.add('hidden');
+            skeleton.classList.remove('hidden');
+
+            try {
+                const res = await fetch(`/api/files/${filename}`);
+                const data = await res.json();
+
+                // build rows data
+                const rowsData = [];
+
+                data.forEach(row => {
+                    const fields = row.fields || {};
+
+                    const getField = (obj, ...keys) => {
+                        for (const k of keys) {
+                            if (!obj) continue;
+                            if (k in obj) return obj[k];
+                        }
+                        return null;
+                    };
+
+                    const company = getField(fields, 'CompanyName', 'ProposedName', 'proposedName', 'company_name') || row.company_name || '';
+                    const recordStatus = getField(fields, 'RecordStatus', 'ReservationStatus', 'reservationStatus', 'record_status') || row.record_status || '';
+                    const registrationDate = getField(fields, 'RegistrationDate', 'ExpiryDate', 'expiryDate', 'registration_date') || row.registration_date || '';
+
+                    const building = getField(fields, 'CurrentBuilding') || '';
+                    const street = getField(fields, 'CurrentStreetAddress') || '';
+                    const town = getField(fields, 'CurrentTown') || '';
+                    const stateVal = getField(fields, 'CurrentState') || '';
+
+                    const addressParts = [building, street, town, stateVal].filter(Boolean);
+                    const address = addressParts.join(', ') || (row.address || row.registration_address || '');
+
+                    const rawType = (getField(fields, 'RecordType', 'record_type') || row.RecordType || row.record_type || '').toString().trim();
+
+                    const TYPE_MAP = {
+                        'PROFIT COMPANY': 'PC',
+                        'NON-PROFIT ORGANISATION': 'NPO',
+                        'INDIVIDUAL BUSINESS': 'IB',
+                        'PARTNERSHIP/FIRM BUSINESS': 'P/FB',
+                        'TAKE ON COMPANY': 'TOC'
+                    };
+
+                    let typeShort = TYPE_MAP[rawType.toUpperCase()] || (rawType ? rawType : 'Other');
+
+                    const typeHtml = `<div class="tooltip" data-tip="${escapeHtml(rawType || '')}"><span class="badge">${escapeHtml(typeShort)}</span></div>`;
+
+                    rowsData.push([company, typeHtml, recordStatus, registrationDate, address]);
+                });
+
+                // hide skeleton, show table
+                skeleton.classList.add('hidden');
+                tableWrapper.classList.remove('hidden');
+
+                // initialize or update DataTable
+                if (dataTable) {
+                    dataTable.clear();
+                    rowsData.forEach(r => dataTable.row.add(r));
+                    dataTable.draw();
+                } else {
+                    dataTable = $('#dataTable').DataTable({
+                        data: rowsData,
+                        columns: [
+                            { title: 'Company Name' },
+                            { title: 'Type', orderable: false },
+                            { title: 'Status' },
+                            { title: 'Registration Date' },
+                            { title: 'Address', orderable: false }
+                        ],
+                        pageLength: 25,
+                        lengthMenu: [10, 25, 50, 100],
+                        responsive: true,
+                        destroy: true
+                    });
+                }
+
+                document.getElementById('totalRecords').textContent = data.length || 0;
+
+                // mark load button as 'loaded' (darkened)
+                currentLoadedFileName = filename;
+                loadBtn.classList.remove('btn-success');
+                loadBtn.classList.add('opacity-60');
+                loadBtn.dataset.loadedFile = filename;
+
+            } catch (err) {
+                console.error(err);
+                skeleton.classList.add('hidden');
+                noData.classList.remove('hidden');
+                alert('Failed to load file');
             }
-
-            const res =
-                await fetch(`/api/files/${filename}`);
-
-            const data =
-                await res.json();
-
-            dataTable.clear();
-
-            data.forEach(row => {
-
-                // normalize different possible shapes from the saved API
-                const fields = row.fields || {};
-
-
-                const getField = (obj, ...keys) => {
-                    for (const k of keys) {
-                        if (!obj) continue;
-                        if (k in obj) return obj[k];
-                    }
-                    return null;
-                };
-
-                const company = getField(fields, 'ProposedName', 'proposedName', 'CompanyName', 'company_name') || row.company_name || '';
-                const recordStatus = getField(fields, 'ReservationStatus', 'reservationStatus', 'Reservation') || row.record_status || '';
-                const registrationDate = getField(fields, 'ExpiryDate', 'expiryDate', 'RegistrationDate', 'registration_date') || row.registration_date || '';
-
-                // Try common address field names used by different API shapes
-                const address = getField(
-                    fields,
-                    'Address', 'address', 'RegisteredAddress', 'PostalAddress', 'PhysicalAddress',
-                    'AddressLine1', 'AddrLine1', 'StreetAddress', 'address1', 'Address1',
-                    'PremiseAddress', 'location', 'Location', 'Premise', 'site_address', 'registration_address'
-                ) || row.address || row.registration_address || '';
-
-                dataTable.row.add([
-                    company,
-                    recordStatus,
-                    registrationDate,
-                    address
-                ]);
-
-            });
-
-            dataTable.draw();
         }
 
 
@@ -280,14 +283,28 @@
                 return;
             }
 
-            await fetch(
-                `/api/files/${filename}`,
-                {
-                    method: 'DELETE'
-                }
-            );
+            await fetch(`/api/files/${filename}`, { method: 'DELETE' });
 
-            dataTable.clear().draw();
+            // If the deleted file was the one currently loaded, reset UI
+            const loadBtn = document.getElementById('loadBtn');
+            if (currentLoadedFileName && currentLoadedFileName === filename) {
+                currentLoadedFileName = null;
+                if (dataTable) {
+                    dataTable.clear().draw();
+                    try { dataTable.destroy(); } catch (e) {}
+                    dataTable = null;
+                }
+
+                document.getElementById('tableWrapper').classList.add('hidden');
+                document.getElementById('noDataPlaceholder').classList.remove('hidden');
+                if (loadBtn) {
+                    loadBtn.dataset.loadedFile = '';
+                    loadBtn.classList.remove('opacity-60');
+                    loadBtn.classList.add('btn-success');
+                }
+            } else {
+                if (dataTable) dataTable.clear().draw();
+            }
 
             await refreshFileList();
         }
@@ -476,6 +493,10 @@
                             state.consecutive_errors
                         }/3`;
 
+                    // reflect running total in the header counter
+                    const tr = document.getElementById('totalRecords');
+                    if (tr) tr.textContent = state.total_records || 0;
+
                     return;
                 }
 
@@ -561,7 +582,24 @@
         // Initial load
         // ====================================================
 
-        refreshFileList();
+        // wire up file select change to update Load button state
+        document.addEventListener('DOMContentLoaded', () => {
+            const select = document.getElementById('fileSelect');
+            const loadBtn = document.getElementById('loadBtn');
+
+            select.addEventListener('change', () => {
+                if (!loadBtn) return;
+                if (select.value !== (loadBtn.dataset.loadedFile || '')) {
+                    loadBtn.classList.add('btn-success');
+                    loadBtn.classList.remove('opacity-60');
+                } else {
+                    loadBtn.classList.remove('btn-success');
+                    loadBtn.classList.add('opacity-60');
+                }
+            });
+
+            refreshFileList();
+        });
 
     </script>
 
