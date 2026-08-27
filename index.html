@@ -106,6 +106,7 @@
 
         let dataTable = null;
         let currentLoadedFileName = null;
+        let lastLoadedRaw = null;
 
         let statusTimer = null;
 
@@ -181,6 +182,9 @@
                 const res = await fetch(`/api/files/${filename}`);
                 const data = await res.json();
 
+                // keep raw records for modal details
+                lastLoadedRaw = data;
+
                 // build rows data
                 const rowsData = [];
 
@@ -228,27 +232,38 @@
                 skeleton.classList.add('hidden');
                 tableWrapper.classList.remove('hidden');
 
-                // initialize or update DataTable
+                // always reinitialize DataTable so createdRow and events are fresh
                 if (dataTable) {
-                    dataTable.clear();
-                    rowsData.forEach(r => dataTable.row.add(r));
-                    dataTable.draw();
-                } else {
-                    dataTable = $('#dataTable').DataTable({
-                        data: rowsData,
-                        columns: [
-                            { title: 'Company Name' },
-                            { title: 'Type', orderable: false },
-                            { title: 'Status' },
-                            { title: 'Registration Date' },
-                            { title: 'Address', orderable: false }
-                        ],
-                        pageLength: 25,
-                        lengthMenu: [10, 25, 50, 100],
-                        responsive: true,
-                        destroy: true
-                    });
+                    try { dataTable.destroy(); } catch (e) {}
+                    dataTable = null;
+                    $('#dataTable tbody').empty();
                 }
+
+                dataTable = $('#dataTable').DataTable({
+                    data: rowsData,
+                    columns: [
+                        { title: 'Company Name' },
+                        { title: 'Type', orderable: false },
+                        { title: 'Status' },
+                        { title: 'Registration Date' },
+                        { title: 'Address', orderable: false }
+                    ],
+                    pageLength: 25,
+                    lengthMenu: [10, 25, 50, 100],
+                    responsive: true,
+                    destroy: true,
+                    createdRow: function(row, data, dataIndex) {
+                        $(row).attr('data-raw-index', dataIndex);
+                        $(row).addClass('cursor-pointer');
+                    }
+                });
+
+                // row click => show details modal
+                $('#dataTable tbody').off('click').on('click', 'tr', function () {
+                    const idx = $(this).attr('data-raw-index');
+                    const raw = lastLoadedRaw && lastLoadedRaw[idx];
+                    if (raw) showDetailsModal(raw);
+                });
 
                 document.getElementById('totalRecords').textContent = data.length || 0;
 
@@ -263,6 +278,68 @@
                 skeleton.classList.add('hidden');
                 noData.classList.remove('hidden');
                 alert('Failed to load file');
+            }
+        }
+
+
+        // ====================================================
+        // Modal helpers
+        // ====================================================
+
+        function showDetailsModal(raw) {
+            const fields = raw.fields || {};
+            const title = fields.CompanyName || fields.ProposedName || raw.company_name || fields.CompanyIdentifier || `Record ${raw.key || ''}`;
+
+            document.getElementById('modalTitle').textContent = title;
+
+            const modalFields = document.getElementById('modalFields');
+            modalFields.innerHTML = '';
+
+            const expectedKeys = ['CompanyIdentifier','CompanyName','CompanyNumber','CurrentBuilding','CurrentState','CurrentStreetAddress','CurrentTown','irn','RecordStatus','RecordType','RegistrationDate'];
+
+            expectedKeys.forEach(k => {
+                const v = fields[k] !== undefined ? fields[k] : (raw[k] !== undefined ? raw[k] : '');
+                const node = document.createElement('div');
+                node.className = 'flex gap-2';
+                node.innerHTML = `<strong class="w-40 text-xs text-muted">${escapeHtml(k)}:</strong><div class="text-sm break-words">${escapeHtml(v)}</div>`;
+                modalFields.appendChild(node);
+            });
+
+            // other fields
+            const otherKeys = Object.keys(fields).filter(k => !expectedKeys.includes(k));
+            if (otherKeys.length) {
+                const hr = document.createElement('hr');
+                hr.className = 'my-2';
+                modalFields.appendChild(hr);
+
+                otherKeys.forEach(k => {
+                    const v = fields[k];
+                    const node = document.createElement('div');
+                    node.className = 'flex gap-2';
+                    node.innerHTML = `<strong class="w-40 text-xs text-muted">${escapeHtml(k)}:</strong><div class="text-sm break-words">${escapeHtml(v)}</div>`;
+                    modalFields.appendChild(node);
+                });
+            }
+
+            // full JSON
+            const jsonEl = document.getElementById('modalJson');
+            jsonEl.textContent = JSON.stringify(raw, null, 2);
+
+            // open modal
+            document.getElementById('detailModalToggle').checked = true;
+        }
+
+        function closeDetailModal() {
+            document.getElementById('detailModalToggle').checked = false;
+        }
+
+        async function copyModalJson() {
+            try {
+                const txt = document.getElementById('modalJson').textContent || '';
+                await navigator.clipboard.writeText(txt);
+                alert('JSON copied to clipboard');
+            } catch (e) {
+                alert('Copy failed');
             }
         }
 
@@ -602,6 +679,26 @@
         });
 
     </script>
+
+    <!-- Detail modal -->
+    <input type="checkbox" id="detailModalToggle" class="modal-toggle" />
+    <div class="modal">
+        <div class="modal-box max-w-4xl">
+            <h3 id="modalTitle" class="font-bold text-lg">Record Details</h3>
+            <div class="mt-4">
+                <div id="modalFields" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm"></div>
+
+                <details class="mt-4">
+                    <summary class="cursor-pointer">Full JSON</summary>
+                    <pre id="modalJson" class="whitespace-pre-wrap text-xs bg-base-200 p-2 rounded max-h-80 overflow-auto"></pre>
+                </details>
+            </div>
+            <div class="modal-action">
+                <button class="btn" onclick="closeDetailModal()">Close</button>
+                <button class="btn btn-primary" onclick="copyModalJson()">Copy JSON</button>
+            </div>
+        </div>
+    </div>
 
 </body>
 </html>
