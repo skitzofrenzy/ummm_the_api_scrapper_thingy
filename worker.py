@@ -133,6 +133,14 @@ def scrape_worker(delay):
                 duplicates = 0
                 missing_keys = 0
 
+                def get_field(obj, *keys):
+                    if not obj or not isinstance(obj, dict):
+                        return None
+                    for k in keys:
+                        if k in obj:
+                            return obj[k]
+                    return None
+
                 for item in results:
                     if not isinstance(item, dict):
                         continue
@@ -143,7 +151,38 @@ def scrape_worker(delay):
                     if record_id in records:
                         duplicates += 1
                         continue
-                    records[record_id] = item
+
+                    # Normalize top-level fields for easier UI consumption
+                    normalized = dict(item)
+                    fields = item.get("fields", {}) or {}
+
+                    company = get_field(fields, 'ProposedName', 'proposedName', 'CompanyName', 'company_name') or ''
+                    record_status = get_field(fields, 'ReservationStatus', 'reservationStatus', 'Reservation') or ''
+                    registration_date = get_field(fields, 'ExpiryDate', 'expiryDate', 'RegistrationDate', 'registration_date') or ''
+                    address = get_field(
+                        fields,
+                        'Address', 'address', 'RegisteredAddress', 'PostalAddress', 'PhysicalAddress',
+                        'AddressLine1', 'AddrLine1', 'StreetAddress', 'address1', 'Address1',
+                        'PremiseAddress', 'location', 'Location', 'Premise', 'site_address', 'registration_address'
+                    ) or ''
+
+                    normalized['company_name'] = company
+                    normalized['record_status'] = record_status
+                    normalized['registration_date'] = registration_date
+                    normalized['address'] = address
+
+                    # Preserve commonly expected fields at top-level for easier consumption
+                    expected_keys = [
+                        'CompanyIdentifier', 'CompanyName', 'CompanyNumber',
+                        'CurrentBuilding', 'CurrentState', 'CurrentStreetAddress', 'CurrentTown',
+                        'irn', 'RecordStatus', 'RecordType', 'RegistrationDate'
+                    ]
+
+                    for k in expected_keys:
+                        # Prefer the value from fields, fall back to existing normalized value, else empty string
+                        normalized[k] = fields.get(k, normalized.get(k, ''))
+
+                    records[record_id] = normalized
                     added += 1
 
                 save_records(file_path, records)

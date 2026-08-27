@@ -140,11 +140,11 @@
             <thead>
 
                 <tr>
-                    <th>IRN</th>
-                    <th>Company Name</th>
-                    <th>Status</th>
-                    <th>Registration Date</th>
-                </tr>
+                        <th>Company Name</th>
+                        <th>Status</th>
+                        <th>Registration Date</th>
+                        <th>Address</th>
+                    </tr>
 
             </thead>
 
@@ -227,11 +227,35 @@
 
             data.forEach(row => {
 
+                // normalize different possible shapes from the saved API
+                const fields = row.fields || {};
+
+
+                const getField = (obj, ...keys) => {
+                    for (const k of keys) {
+                        if (!obj) continue;
+                        if (k in obj) return obj[k];
+                    }
+                    return null;
+                };
+
+                const company = getField(fields, 'ProposedName', 'proposedName', 'CompanyName', 'company_name') || row.company_name || '';
+                const recordStatus = getField(fields, 'ReservationStatus', 'reservationStatus', 'Reservation') || row.record_status || '';
+                const registrationDate = getField(fields, 'ExpiryDate', 'expiryDate', 'RegistrationDate', 'registration_date') || row.registration_date || '';
+
+                // Try common address field names used by different API shapes
+                const address = getField(
+                    fields,
+                    'Address', 'address', 'RegisteredAddress', 'PostalAddress', 'PhysicalAddress',
+                    'AddressLine1', 'AddrLine1', 'StreetAddress', 'address1', 'Address1',
+                    'PremiseAddress', 'location', 'Location', 'Premise', 'site_address', 'registration_address'
+                ) || row.address || row.registration_address || '';
+
                 dataTable.row.add([
-                    row.irn || '',
-                    row.company_name || '',
-                    row.record_status || '',
-                    row.registration_date || ''
+                    company,
+                    recordStatus,
+                    registrationDate,
+                    address
                 ]);
 
             });

@@ -116,6 +116,7 @@ def validate_name(session, name, headers):
 
 
 def search_name_reservation(session, name, headers):
-    payload = {"rvr-input-lang": "en", "ProposedName": name, "searchName": "ns-name-reservation"}
+    # Use the public search payload expected by the server
+    payload = {"rvr-input-lang": "en", "CompanyName": name, "searchName": "ns-public-search"}
 
     return session.post(config.TARGET_URL, json=payload, headers=headers, verify=config.VERIFY_SSL, timeout=25)
