@@ -41,6 +41,7 @@
                 </div>
 
                 <button id="loadBtn" class="btn btn-success" onclick="loadSelectedFile()">Load File</button>
+                <button id="editEnvBtn" class="btn btn-ghost" onclick="openEnvEditor()">Edit .env</button>
                 <button class="btn btn-outline btn-error" onclick="deleteSelectedFile()">Delete File</button>
 
                 <div id="statusText" class="ml-auto text-sm font-medium"></div>
@@ -340,6 +341,48 @@
                 alert('JSON copied to clipboard');
             } catch (e) {
                 alert('Copy failed');
+            }
+        }
+
+
+        // ====================================================
+        // Env editor
+        // ====================================================
+
+        async function openEnvEditor() {
+            try {
+                const res = await fetch('/api/env');
+                if (!res.ok) throw new Error('Could not read .env');
+                const data = await res.json();
+                document.getElementById('envEditor').value = data.content || '';
+                document.getElementById('envModalToggle').checked = true;
+            } catch (e) {
+                alert('Failed to open .env editor: ' + e.message);
+            }
+        }
+
+        async function saveEnv() {
+            const btn = document.getElementById('saveEnvBtn');
+            const content = document.getElementById('envEditor').value;
+            try {
+                if (btn) btn.disabled = true;
+                const res = await fetch('/api/env', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Save failed');
+
+                alert('.env saved and reloaded');
+                document.getElementById('envModalToggle').checked = false;
+                // refresh file list in case BASE_DIR changed
+                try { await refreshFileList(); } catch (e) {}
+            } catch (e) {
+                alert('Failed to save .env: ' + (e.message || e));
+            } finally {
+                if (btn) btn.disabled = false;
             }
         }
 
@@ -696,6 +739,21 @@
             <div class="modal-action">
                 <button class="btn" onclick="closeDetailModal()">Close</button>
                 <button class="btn btn-primary" onclick="copyModalJson()">Copy JSON</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Env editor modal -->
+    <input type="checkbox" id="envModalToggle" class="modal-toggle" />
+    <div class="modal">
+        <div class="modal-box max-w-3xl">
+            <h3 class="font-bold text-lg">Edit .env</h3>
+            <div class="mt-4">
+                <textarea id="envEditor" class="textarea textarea-bordered w-full h-64" placeholder="KEY=value"></textarea>
+            </div>
+            <div class="modal-action">
+                <button class="btn" onclick="document.getElementById('envModalToggle').checked=false">Cancel</button>
+                <button class="btn btn-primary" id="saveEnvBtn" onclick="saveEnv()">Save .env</button>
             </div>
         </div>
     </div>

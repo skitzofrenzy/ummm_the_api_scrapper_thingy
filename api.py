@@ -87,6 +87,46 @@ def stop_scrape():
     return jsonify({"status": "stopping"})
 
 
+@app.route("/api/env", methods=["GET"])
+def get_env():
+    try:
+        path = config.ENV_PATH
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return jsonify({"exists": True, "content": content})
+        else:
+            return jsonify({"exists": False, "content": ""})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/env", methods=["POST"])
+def save_env():
+    data = request.get_json(silent=True) or {}
+    content = data.get("content")
+    if content is None:
+        return jsonify({"error": "No content provided"}), 400
+
+    try:
+        path = config.ENV_PATH
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+
+        # reload runtime config
+        try:
+            config.reload_config()
+        except Exception as e:
+            print("Failed to reload config:", e)
+
+        return jsonify({"status": "saved"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # Debug endpoint: returns masked cookie names from the last session (no sensitive values)
 @app.route("/api/debug/session-cookies", methods=["GET"])
 def debug_session_cookies():
